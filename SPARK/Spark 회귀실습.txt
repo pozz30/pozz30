@@ -1,0 +1,274 @@
+﻿# Spark를 이용한 회귀 실습 (Boston Housing data regression)
+
+## Spark 내려 받기
+
+- windows terminal or mac terminal을 연다. 
+- 소스 코드를 다운 받을 적당한 디렉토리로 이동한다.  
+- git 명령어를 이용해 Spark를 내려 받는다. 
+
+```
+git clone https://github.com/CUKykkim/regression.git
+```
+
+
+## Spark 수행하기
+
+- git을 통해 다운 받은 디렉토리 안으로 들어간다. 
+
+```
+cd regression
+```
+
+- `docker-compose` 명령어를 이용해 스파크 컨테이너를 띄운다. 
+  
+```
+docker-compose up
+```
+
+- 컨테이너가 모두 수행이 되면 컨테이너는 다음과 같은 상태가 됨
+
+```
+docker ps
+```
+
+```
+CONTAINER ID   IMAGE                    COMMAND                  CREATED              STATUS          PORTS
+                   NAMES
+edb3f8d728c9   ykkim77/spark-worker-1   "/bin/bash /worker.sh"   42 seconds ago       Up 36 seconds   0.0.0.0:8081->8081/tcp, :::8081->8081/tcp
+                   spark-worker-1
+349f58d01f67   ykkim77/spark-master     "/bin/bash /master.sh"   About a minute ago   Up 39 seconds   0.0.0.0:7077->7077/tcp, :::7077->7077/tcp, 6066/tcp, 0.0.0.0:8080->8080/tcp, :::8080->8080/tcp   spark-master
+```
+
+
+- terminal 탭을 하나 더 열어, spark-master 컨테이너로 진입
+
+```
+docker exec -it spark-master /bin/bash
+```
+
+- spark가 설치된 경로의 디렉토리로 이동
+
+```
+cd  ~/../spark/bin/
+```
+
+
+- python으로 spark을 연산을 수행할 수 있는 스파크쉘 수행
+
+```
+./pyspark
+```
+
+
+
+```
+Welcome to
+      ____              __
+     / __/__  ___ _____/ /__
+    _\ \/ _ \/ _ `/ __/  '_/
+   /__ / .__/\_,_/_/ /_/\_\   version 3.1.1
+      /_/
+
+Using Python version 3.7.10 (default, Mar  2 2021 09:06:08)
+Spark context Web UI available at http://349f58d01f67:4040
+Spark context available as 'sc' (master = local[*], app id = local-1632992284633).
+SparkSession available as 'spark'.
+```
+
+
+
+## Boston Housing dataset 설명
+
+```
+ CRIM	   town 별 1인당 범죄율
+ ZN  	   25,000 평방피트를 초과하는 거주지역의 비율
+ INDUS     비소매상업지역이 점유하고 있는 토지의 비율
+ CHAS	   찰스강에 대한 더미변수(강의 경계에 위치한 경우는 1, 아니면 0)
+ NOX	   10ppm 당 농축 일산화질소
+ RM	       주택 1가구당 평균 방의 개수
+ AGE	   1940년 이전에 건축된 소유주택의 비율
+ DIS 	   5개의 보스턴 직업센터까지의 접근성 지수
+ RAD	   방사형 도로까지의 접근성 지수
+ TAX	   10,000 달러 당 재산세율
+ PTRATIO   town별 학생/교사 비율
+ B	       1000(Bk-0.63)^2, 여기서 Bk는 자치시별 흑인의 비율을 말함
+ LSTAT	   모집단의 하위계층의 비율(%)
+ MEDV	   본인 소유의 주택가격의 중앙값 (단위: $1,000)
+
+```
+
+## Boston Housing Data 준비하기
+
+```
+from pyspark.ml.feature import VectorAssembler
+
+df = spark.read.csv('Boston.csv', header = True, inferSchema = True)
+df.show()     // 적재된 데이터셋 확인
+
+vectorAssembler = VectorAssembler(inputCols = ['crim', 'zn', 'indus', 'chas', 'nox', 'rm', 'age', 'dis', 'rad', 'tax', 'ptratio', 'black', 'lstat'], outputCol = 'features')    // feature들을 벡터화하기
+
+vhouse_df = vectorAssembler.transform(df)
+
+vhouse_df.show()   // vector assemble 된 데이터셋 확인
+
+vhouse_df = vhouse_df.select(['features', 'medv'])   // 분석에 필요한 컬럼만 뽑아 내기
+
+vhouse_df.show()   // 필요한 컬럼만 뽑아낸 데이터셋 확인
+
+splits = vhouse_df.randomSplit([0.7, 0.3])    // 학습데이터와 테스트데이터로 분할
+train_df = splits[0]
+test_df = splits[1]
+
+```
+
+
+## Linear Regression 학습
+
+```
+from pyspark.ml.regression import LinearRegression    // Linear Regression API import
+
+lr = LinearRegression(featuresCol = 'features', labelCol='medv', maxIter=10, regParam=0.3, elasticNetParam=0.8)   // Linear Resression 설정
+
+lr_model = lr.fit(train_df)     // LinearRegression 학습
+
+print("Coefficients: " + str(lr_model.coefficients))   // coefficients 출력
+print("Intercept: " + str(lr_model.intercept))       // intercept 출력
+
+trainingSummary = lr_model.summary
+print("RMSE: %f" % trainingSummary.rootMeanSquaredError)    // RMSE 출력
+
+
+```
+
+## RMSE 평가
+
+![rmse](./images/rmse.png)
+
+
+## Linear Regression 모델 평가
+
+```
+lr_predictions = lr_model.transform(test_df)
+lr_predictions.select("prediction","medv","features").show(10)
+
+from pyspark.ml.evaluation import RegressionEvaluator     // 회귀 모델 평가 API import
+lr_evaluator = RegressionEvaluator(predictionCol="prediction", \
+                 labelCol="medv",metricName="rmse")
+
+print("Root Mean Squared Error (RMSE) on test data = %g" % lr_evaluator.evaluate(lr_predictions))
+```
+
+
+
+
+## Generalized linear regression 학습
+
+```
+from pyspark.ml.regression import GeneralizedLinearRegression    // GeneralizedLinearRegression API import
+
+glr = GeneralizedLinearRegression(featuresCol = 'features', labelCol='medv',family="gaussian", link="identity", maxIter=10, regParam=0.3)   // Linear Resression 설정
+
+glr_model = glr.fit(train_df)     // GeneralizedLinearRegression 학습
+
+print("Coefficients: " + str(glr_model.coefficients))   // coefficients 출력
+print("Intercept: " + str(glr_model.intercept))       // intercept 출력
+
+```
+
+
+## Generalized linear regression 모델 평가
+
+```
+glr_predictions = glr_model.transform(test_df)
+glr_predictions.select("prediction","medv","features").show(10)
+
+
+glr_evaluator = RegressionEvaluator(predictionCol="prediction", \
+                 labelCol="medv",metricName="rmse")
+
+print("Root Mean Squared Error (RMSE) on test data = %g" % glr_evaluator.evaluate(glr_predictions))
+```
+
+
+## DecisionTreeRegressor  학습
+
+```
+from pyspark.ml.regression import DecisionTreeRegressor    // DecisionTreeRegressor API import
+
+dt = DecisionTreeRegressor(featuresCol = 'features', labelCol='medv') //DecisionTreeRegressor 설정
+
+dt_model = dt.fit(train_df)     // DecisionTreeRegressor 학습
+
+
+```
+
+
+## DecisionTreeRegressor  모델 평가
+
+```
+dt_predictions = dt_model.transform(test_df)
+dt_predictions.select("prediction","medv","features").show(10)
+
+
+dt_evaluator = RegressionEvaluator(predictionCol="prediction", \
+                 labelCol="medv",metricName="rmse")
+
+print("Root Mean Squared Error (RMSE) on test data = %g" % dt_evaluator.evaluate(dt_predictions))
+```
+
+
+
+
+## RandomForestRegressor  학습
+
+```
+from pyspark.ml.regression import RandomForestRegressor    // RandomForestRegressor API import
+
+rf = RandomForestRegressor(featuresCol = 'features', labelCol='medv') //RandomForestRegressor 설정
+
+rf_model = rf.fit(train_df)     // RandomForestRegressor 학습
+
+
+```
+
+
+## RandomForestRegressor  모델 평가
+
+```
+rf_predictions = rf_model.transform(test_df)
+rf_predictions.select("prediction","medv","features").show(10)
+
+
+rf_evaluator = RegressionEvaluator(predictionCol="prediction", \
+                 labelCol="medv",metricName="rmse")
+
+print("Root Mean Squared Error (RMSE) on test data = %g" % rf_evaluator.evaluate(rf_predictions))
+```
+
+
+
+## GBTRegressor  학습
+
+```
+from pyspark.ml.regression import GBTRegressor    // GBTRegressor API import
+
+GBT = GBTRegressor(featuresCol = 'features', labelCol='medv') //GBTRegressor설정
+
+GBT_model = GBT.fit(train_df)     // GBTRegressor 학습
+
+
+```
+
+
+## GBTRegressor  모델 평가
+
+```
+GBT_predictions = GBT_model.transform(test_df)
+GBT_predictions.select("prediction","medv","features").show(10)
+
+
+GBT_evaluator = RegressionEvaluator(predictionCol="prediction", \
+                 labelCol="medv",metricName="rmse")
+
+print("Root Mean Squared Error (RMSE) on test data = %g" % GBT_evaluator.evaluate(GBT_predictions))
+```
